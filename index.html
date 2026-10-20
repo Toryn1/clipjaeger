@@ -227,6 +227,13 @@ details.text summary b{color:var(--accent);font-weight:600}
       </div>
       <h3>Untertitel</h3>
       <div class="field">
+        <span class="lbl">Bei der Analyse erstellen</span>
+        <div class="seg" id="autoSub">
+          <button data-v="on">Automatisch</button><button data-v="off">Nur auf Wunsch</button>
+        </div>
+        <p class="hint">Bei „Automatisch“ bekommt jeder gefundene Clip direkt Untertitel. Du kannst sie danach in der Karte korrigieren.</p>
+      </div>
+      <div class="field">
         <span class="lbl">Sprache</span>
         <div class="seg" id="lang">
           <button data-v="german">Deutsch</button><button data-v="english">Englisch</button><button data-v="auto">Automatisch</button>
@@ -299,7 +306,7 @@ const MOBILE = matchMedia('(pointer: coarse)').matches || /iPhone|iPad|Android/i
 const SCAN_RATE = MOBILE ? 2 : 4;
 let GEN = 0;   /* zählt hoch, wenn ein neues Video geladen wird */
 const S = { sample:true, duration:0, db:null, z:null, pcm:null, clips:[], fileName:'', url:null, rendering:false,
-  set:{ len:30, count:8, sens:6, fmt:'916', fit:'crop', pos:50, lang:'german', model:'base' } };
+  set:{ len:30, count:8, sens:6, fmt:'916', fit:'crop', pos:50, lang:'german', model:'base', autoSub:'on' } };
 try { Object.assign(S.set, JSON.parse(localStorage.getItem('cj-set')||'{}')); } catch(e){}
 
 /* Speichern: in Claude über die Downloads-Funktion, sonst als normaler Browser-Download */
@@ -401,7 +408,7 @@ async function analyze(){
     else await analyzeScan();
     let mx=-99; for (const v of S.db) if (v>mx) mx=v;
     if (mx < -70) { toast('Keine hörbare Tonspur gefunden. Die Erkennung braucht Ton.'); }
-    detect(); drawTimeline(); renderCards(); makeThumbs();
+    detect(); drawTimeline(); renderCards(); makeThumbs(); autoSubs();
     toast(S.clips.length ? `${S.clips.length} Highlights gefunden` : 'Keine klaren Highlights. Erhöhe die Empfindlichkeit.');
     $('analyze').textContent = 'Erneut analysieren';
   } catch(e){ toast('Analyse fehlgeschlagen: '+(e.message||e)); }
@@ -574,7 +581,7 @@ async function transcribe(c){
     c.sub = 'done'; c.subMsg = c.cues.length ? '' : 'Keine Sprache erkannt.';
     if (c.state==='ready') c.state='idle';
   } catch(e){
-    c.sub = 'none';
+    c.sub = 'none'; c.open = true;
     c.subMsg = IN_CLAUDE ? 'Automatische Erkennung ist in der Claude-Ansicht blockiert. Nutze die Datei-Version von Clipjäger oder tippe den Text selbst ein.'
                          : 'Spracherkennung fehlgeschlagen: '+(e.message||e);
   }
@@ -666,7 +673,8 @@ async function renderClip(c){
 let queue = Promise.resolve();
 const fail = (c,e) => { S.rendering=false; video.controls=true; if (monitor) monitor.gain.value=1; busy(null); keepAwake(false); toast(e.message||String(e), 6000); renderCards(true); };
 const enqueue = c => { c.gen = GEN; c.state='queued'; renderCards(); queue = queue.then(()=>renderClip(c)).catch(e=>{ c.state='idle'; fail(c,e); }); };
-const enqueueSub = c => { c.gen = GEN; c.sub='queued'; c.subMsg='Wartet…'; renderCards(true); queue = queue.then(()=> c.gen===GEN ? transcribe(c) : null).catch(e=>{ c.sub='none'; fail(c,e); }); };
+const autoSubs = () => { if (S.set.autoSub==='on' && !S.sample) S.clips.filter(c=>c.sub==='none' && c.state==='idle').forEach(enqueueSub); };
+const enqueueSub = c => { c.gen = GEN; c.sub='queued'; c.subMsg='Wartet…'; renderCards(true); queue = queue.then(()=> c.gen===GEN && S.clips.includes(c) ? transcribe(c) : (c.sub==='queued' && (c.sub='none'), null)).catch(e=>{ c.sub='none'; fail(c,e); }); };
 async function saveClip(c){
   if (!downloads) { toast('Speichern ist in dieser Ansicht nicht verfügbar.'); return; }
   const name = `${S.fileName||'clip'}_highlight-${c.rank}_${{'916':'9x16','11':'1x1','orig':'16x9'}[c.fmt]}.${c.ext}`.replace(/[^\w.\-äöüÄÖÜß]+/g,'_');
@@ -696,7 +704,7 @@ function cardHtml(c, real){
       <div class="score"><span>Hype</span><div class="bar"><i style="width:${c.score}%"></i></div><span>${c.score}</span></div>
       <div class="trim"><span>Start</span><button data-a="s-" ${lock}>−2 s</button><button data-a="s+" ${lock}>+2 s</button>
         <span>Ende</span><button data-a="e-" ${lock}>−2 s</button><button data-a="e+" ${lock}>+2 s</button></div>
-      <details class="text" ${c.open?'open':''}><summary>Titel &amp; Untertitel ${has?`<b>· ${has}</b>`:''}</summary>
+      <details class="text" ${c.open?'open':''}><summary>Titel &amp; Untertitel ${subBusy ? '<b>· Untertitel werden erstellt…</b>' : c.sub==='none' && c.subMsg ? '<b class="danger">· Untertitel fehlgeschlagen</b>' : has?`<b>· ${has}</b>`:''}</summary>
         <div class="textbox">
           <label class="lbl" for="t-${c.id}">Titel oben im Clip</label>
           <input id="t-${c.id}" data-f="title" maxlength="80" placeholder="z. B. Der Clutch des Jahres" ${!real?'disabled':''}>
@@ -740,7 +748,7 @@ grid.addEventListener('click', e => {
   if (a==='play'){ if (S.rendering) return toast('Warte, bis die laufende Aufgabe fertig ist.');
     if (c.state==='ready'){ b.closest('.card').querySelector('video').play(); return; }
     if (actx) actx.resume(); video.currentTime=c.start; previewEnd=c.end; video.play(); stage.scrollIntoView({behavior:'smooth',block:'center'}); }
-  if (a==='render'){ unlock(); enqueue(c); }
+  if (a==='render'){ unlock(); if (S.set.autoSub==='on' && c.sub==='none') enqueueSub(c); enqueue(c); }
   if (a==='save') saveClip(c);
   if (a==='sub'){ unlock(); enqueueSub(c); }
   if (a==='del'){ S.clips = S.clips.filter(x=>x!==c); drawTimeline(); renderCards(); }
@@ -761,13 +769,13 @@ grid.addEventListener('input', e => {
   sum.innerHTML = 'Titel &amp; Untertitel ' + (has?`<b>· ${has}</b>`:'');
 });
 grid.addEventListener('toggle', e => { const d = e.target; if (d.tagName!=='DETAILS') return; const c = S.clips.find(x=>x.id===d.closest('.card').dataset.id); if (c) c.open = d.open; }, true);
-$('renderAll').onclick = () => { unlock(); S.clips.filter(c=>c.state==='idle').forEach(enqueue); };
+$('renderAll').onclick = () => { unlock(); autoSubs(); S.clips.filter(c=>c.state==='idle').forEach(enqueue); };
 $('subAll').onclick = () => { unlock(); S.clips.filter(c=>c.sub==='none' && c.state==='idle').forEach(enqueueSub); };
 
 /* ---------- settings ---------- */
 function syncSettings(){
   const s = S.set;
-  for (const id of ['len','fmt','fit','lang','model'])
+  for (const id of ['len','fmt','fit','lang','model','autoSub'])
     $(id).querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v==String(s[id]))));
   $('count').value=s.count; $('countOut').textContent=s.count;
   $('sens').value=s.sens; $('sensOut').textContent=s.sens+' / 10';
@@ -778,9 +786,9 @@ function syncSettings(){
   try { localStorage.setItem('cj-set', JSON.stringify(s)); } catch(e){}
   updateCrop();
 }
-function changed(redetect){ syncSettings(); if (redetect && S.db){ detect(); if (S.sample) sampleText(); drawTimeline(); renderCards(true); if (!S.sample) makeThumbs(); } }
-for (const id of ['len','fmt','fit','lang','model'])
-  $(id).addEventListener('click', e => { const b=e.target.closest('button'); if(!b) return; S.set[id] = id==='len' ? +b.dataset.v : b.dataset.v; changed(id==='len');
+function changed(redetect){ syncSettings(); if (redetect && S.db){ detect(); if (S.sample) sampleText(); drawTimeline(); renderCards(true); if (!S.sample){ makeThumbs(); autoSubs(); } } }
+for (const id of ['len','fmt','fit','lang','model','autoSub'])
+  $(id).addEventListener('click', e => { const b=e.target.closest('button'); if(!b) return; S.set[id] = id==='len' ? +b.dataset.v : b.dataset.v; changed(id==='len'); if (id==='autoSub' && S.set.autoSub==='on' && S.z){ unlock(); autoSubs(); }
     if ((id==='fmt'||id==='fit') && S.clips.some(c=>c.state==='ready')) toast('Neues Format gilt für Clips, die du ab jetzt renderst.'); });
 $('count').oninput = e => { S.set.count=+e.target.value; changed(1); };
 $('sens').oninput = e => { S.set.sens=+e.target.value; changed(1); };
@@ -788,7 +796,7 @@ $('pos').oninput = e => { S.set.pos=+e.target.value; changed(0); };
 
 /* ---------- file input & drag/drop ---------- */
 $('file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; loadFile(f); };
-$('analyze').onclick = () => { if (S.method==='scan') unlock(); analyze(); };
+$('analyze').onclick = () => { if (S.method==='scan' || S.set.autoSub==='on') unlock(); analyze(); };
 addEventListener('dragover', e => { e.preventDefault(); stage.classList.add('drag'); });
 addEventListener('dragleave', e => { if (!e.relatedTarget) stage.classList.remove('drag'); });
 addEventListener('drop', e => { e.preventDefault(); stage.classList.remove('drag'); const f=e.dataTransfer.files[0]; if (f) loadFile(f); });
