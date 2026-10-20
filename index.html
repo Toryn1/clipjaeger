@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}</style>
 <title>Clipjäger</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Big+Shoulders+Display:wght@700;800&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
@@ -222,6 +222,9 @@ const $ = id => document.getElementById(id);
 const video = $('video'), stage = $('stage'), grid = $('grid'), tl = $('tl');
 const HOP = 0.25;
 const IN_CLAUDE = !!(window.claude && window.claude.use);
+const MOBILE = matchMedia('(pointer: coarse)').matches || /iPhone|iPad|Android/i.test(navigator.userAgent);
+const SCAN_RATE = MOBILE ? 2 : 4;
+let GEN = 0;   /* zählt hoch, wenn ein neues Video geladen wird */
 const S = { sample:true, duration:0, db:null, z:null, pcm:null, clips:[], fileName:'', url:null, rendering:false,
   set:{ len:30, count:8, sens:6, fmt:'916', fit:'crop', pos:50, lang:'german', model:'base' } };
 try { Object.assign(S.set, JSON.parse(localStorage.getItem('cj-set')||'{}')); } catch(e){}
@@ -301,16 +304,18 @@ function ensureAudio(){
 async function loadFile(file){
   if (!file || !file.type.startsWith('video') && !/\.(mp4|mov|webm|mkv|m4v)$/i.test(file.name)) { toast('Bitte eine Videodatei wählen.'); return; }
   if (S.rendering) { toast('Warte, bis die laufende Aufgabe fertig ist.'); return; }
+  GEN++; unlockedSrc = null; previewEnd = 0;
+  S.clips.forEach(c=>{ if (c.blobUrl) URL.revokeObjectURL(c.blobUrl); });
   if (S.url) URL.revokeObjectURL(S.url);
   S.file = file; S.fileName = file.name.replace(/\.[^.]+$/,''); S.url = URL.createObjectURL(file);
   video.src = S.url; video.hidden = false; $('drop').hidden = true;
   await new Promise((res,rej)=>{ video.onloadedmetadata=res; video.onerror=()=>rej(); }).catch(()=>{ toast('Dieses Video kann der Browser nicht abspielen. Versuch es als MP4.'); });
   if (!video.duration) return;
   S.duration = video.duration; S.sample = false; S.db = null; S.z = null; S.pcm = null; S.clips = [];
-  const fast = file.size < 500e6;
+  const fast = file.size < (MOBILE ? 150e6 : 500e6);
   S.method = fast ? 'fast' : 'scan';
   $('info').innerHTML = `<b>${esc(file.name)}</b><br>${fmtT(S.duration)} · ${(file.size/1e6).toFixed(0)} MB · ` +
-    (fast ? 'Schnell-Analyse der Tonspur' : `Großes Video: Analyse im 4-fachen Tempo, ca. ${Math.ceil(S.duration/240)} Min.`);
+    (fast ? 'Schnell-Analyse der Tonspur' : `Großes Video: Analyse im ${SCAN_RATE}-fachen Tempo, ca. ${Math.ceil(S.duration/60/SCAN_RATE)} Min. Seite dabei offen lassen.`);
   $('analyze').hidden = false; $('analyze').disabled = false; $('analyze').textContent='Highlights finden'; $('other').hidden = false;
   updateCrop(); drawTimeline(); renderCards();
 }
@@ -345,8 +350,9 @@ async function analyzeDecode(){
 async function analyzeScan(){
   ensureAudio(); await actx.resume();
   const n = Math.ceil(S.duration/HOP), sum = new Float32Array(n), cnt = new Uint16Array(n), buf = new Float32Array(analyser.fftSize);
-  monitor.gain.value = 0; video.pause(); video.currentTime = 0; video.playbackRate = 4; S.rendering = true; busy('● ANALYSE');
-  await video.play();
+  monitor.gain.value = 0; video.pause(); video.currentTime = 0; video.playbackRate = SCAN_RATE; S.rendering = true; busy('● ANALYSE'); keepAwake(true);
+  await video.play().catch(e => { video.playbackRate=1; monitor.gain.value=1; S.rendering=false; busy(null); keepAwake(false);
+    throw new Error('Der Browser hat das Abspielen blockiert. Tippe noch einmal auf „Highlights finden“.'); });
   await new Promise(res => {
     const iv = setInterval(() => {
       analyser.getFloatTimeDomainData(buf); let s=0; for (const x of buf) s+=x*x;
@@ -355,7 +361,7 @@ async function analyzeScan(){
       if (video.ended || video.currentTime >= S.duration-0.1) { clearInterval(iv); res(); }
     }, 40);
   });
-  video.pause(); video.playbackRate = 1; monitor.gain.value = 1; S.rendering=false; busy(null);
+  video.pause(); video.playbackRate = 1; monitor.gain.value = 1; S.rendering=false; busy(null); keepAwake(false);
   const db = new Float32Array(n); let last = -60;
   for (let i=0;i<n;i++){ if (cnt[i]) last = Math.max(-80, 10*Math.log10(sum[i]/cnt[i]+1e-9)); db[i]=last; }
   S.db = db;
@@ -364,10 +370,11 @@ function busy(t){ $('busy').hidden = !t; if (t) $('busy').textContent = t; }
 
 /* ---------- thumbnails ---------- */
 async function makeThumbs(){
+  const gen = GEN;
   const tv = document.createElement('video'); tv.muted = true; tv.playsInline = true; tv.preload='auto'; tv.src = S.url;
   await new Promise(r=>{ tv.onloadeddata=r; tv.onerror=r; setTimeout(r,4000); });
   const cv = document.createElement('canvas'); cv.width=320; cv.height=180; const g = cv.getContext('2d');
-  for (const c of S.clips){ if (c.thumb || S.sample) continue;
+  for (const c of S.clips){ if (gen !== GEN) break; if (c.thumb || S.sample) continue;
     await new Promise(r=>{ tv.onseeked=r; tv.currentTime=Math.min(c.peak, S.duration-0.1); setTimeout(r,3000); });
     try { g.drawImage(tv,0,0,320,180); c.thumb = cv.toDataURL('image/jpeg',.75); } catch(e){}
     renderCards(); }
@@ -506,11 +513,11 @@ function updateSubMsg(c){ const el = grid.querySelector(`[data-id="${c.id}"] .su
 /* ---------- rendering ---------- */
 const MIME = (() => { if (!window.MediaRecorder) return null;
   return ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(t=>MediaRecorder.isTypeSupported(t)) || null; })();
-function outSize(){ const vw=video.videoWidth, vh=video.videoHeight;
-  if (S.set.fmt==='916') return [1080,1920]; if (S.set.fmt==='11') return [1080,1080];
-  const k = Math.min(1, 1920/Math.max(vw,vh)); return [Math.round(vw*k/2)*2, Math.round(vh*k/2)*2]; }
+function outSize(){ const vw=video.videoWidth, vh=video.videoHeight, L = MOBILE ? 1280 : 1920, Sh = L*9/16;
+  if (S.set.fmt==='916') return [Sh,L]; if (S.set.fmt==='11') return [Sh,Sh];
+  const k = Math.min(1, L/Math.max(vw,vh)); return [Math.round(vw*k/2)*2, Math.round(vh*k/2)*2]; }
 function drawFrame(g,w,h){
-  const vw=video.videoWidth, vh=video.videoHeight;
+  const vw=video.videoWidth, vh=video.videoHeight; if (!vw || !vh) return;
   if (S.set.fmt==='orig'){ g.drawImage(video,0,0,w,h); return; }
   const a = w/h;
   const cover = (pos) => { if (vw/vh > a){ const sw=vh*a; g.drawImage(video,(vw-sw)*pos,0,sw,vh,0,0,w,h); } else { const sh=vw/a; g.drawImage(video,0,(vh-sh)/2,vw,sh,0,0,w,h); } };
@@ -519,35 +526,73 @@ function drawFrame(g,w,h){
   if ('filter' in g){ g.filter='blur(36px) brightness(.6)'; cover(.5); g.filter='none'; } else { cover(.5); g.fillStyle='rgba(0,0,0,.55)'; g.fillRect(0,0,w,h); }
   const sc = Math.min(w/vw,h/vh), dw=vw*sc, dh=vh*sc; g.drawImage(video,(w-dw)/2,(h-dh)/2,dw,dh);
 }
-const seek = t => new Promise(r => { video.onseeked = () => { video.onseeked=null; r(); }; video.currentTime = t; });
+/* Springt an eine Stelle; bricht nach 5 s ab, falls der Browser kein "seeked" meldet */
+const seek = t => new Promise(r => { let done=false; const fin = () => { if (done) return; done=true; video.removeEventListener('seeked',fin); r(); };
+  video.addEventListener('seeked',fin); setTimeout(fin,5000);
+  if (Math.abs(video.currentTime-t) < 0.01 && video.readyState>=2) fin(); else video.currentTime = t; });
+/* Video und Ton mit einem Tipp freischalten: Safari erlaubt Abspielen mit Ton sonst nur direkt nach einer Berührung */
+let unlockedSrc = null;
+function unlock(){
+  if (!video.src) return; ensureAudio(); actx.resume().catch(()=>{});
+  if (unlockedSrc === video.src || S.rendering) return; unlockedSrc = video.src;
+  monitor.gain.value = 0; const pr = video.play();
+  if (pr) pr.then(()=>{ if (!S.rendering){ video.pause(); } monitor.gain.value = S.rendering ? 0 : 1; }).catch(()=>{ monitor.gain.value=1; unlockedSrc=null; });
+}
+let wake = null;
+async function keepAwake(on){ try { if (on && navigator.wakeLock && !wake) wake = await navigator.wakeLock.request('screen'); if (!on && wake){ await wake.release(); wake=null; } } catch(e){ wake=null; } }
 async function renderClip(c){
-  if (!MIME || !HTMLCanvasElement.prototype.captureStream) { toast('Dieser Browser kann keine Videos aufnehmen. Nimm Chrome, Edge oder Safari.'); c.state='idle'; renderCards(); return; }
-  ensureAudio(); await actx.resume();
-  if (document.fonts) await Promise.all([document.fonts.load('60px "Archivo Black"'), document.fonts.load('700 60px "Instrument Sans"')]).catch(()=>{});
-  S.rendering = true; c.state='rendering'; c.pct=0; renderCards(); busy('● REC');
-  previewEnd = 0; video.pause(); video.controls = false;
+  if (c.gen !== GEN) return;   /* gehört zu einem vorher geladenen Video */
+  if (!MIME || !HTMLCanvasElement.prototype.captureStream) { c.state='idle'; renderCards(); throw new Error('Dieser Browser kann keine Videos aufnehmen. Nimm Chrome, Edge oder Safari.'); }
+  ensureAudio(); await actx.resume().catch(()=>{});
+  if (document.fonts) await Promise.race([Promise.all([document.fonts.load('60px "Archivo Black"'), document.fonts.load('700 60px "Instrument Sans"')]), sleep(3000)]).catch(()=>{});
+  S.rendering = true; c.state='rendering'; c.pct=0; renderCards(); busy('● REC'); keepAwake(true);
+  previewEnd = 0; video.pause(); video.controls = false; video.playbackRate = 1;
   const [w,h] = outSize(), cv = document.createElement('canvas'); cv.width=w; cv.height=h; const g = cv.getContext('2d');
-  await seek(c.start); drawFrame(g,w,h); drawText(g,w,h,c,0);
-  const vs = cv.captureStream(30), ms = new MediaStream([...vs.getVideoTracks(), ...recDest.stream.getAudioTracks()]);
-  const rec = new MediaRecorder(ms, { mimeType:MIME, videoBitsPerSecond:8e6 }), chunks=[];
-  rec.ondataavailable = e => e.data.size && chunks.push(e.data); const stopped = new Promise(r=>rec.onstop=r);
-  monitor.gain.value = 0; rec.start(500); await video.play();
-  await new Promise(res => { let lastPct=-1;
-    const tick = () => { drawFrame(g,w,h); drawText(g,w,h,c,video.currentTime-c.start); const p = (video.currentTime-c.start)/(c.end-c.start);
-      if (Math.round(p*20)!==lastPct){ lastPct=Math.round(p*20); c.pct=Math.min(1,p); renderCards(); }
-      if (video.currentTime >= c.end || video.ended || video.paused) return res();
-      video.requestVideoFrameCallback ? video.requestVideoFrameCallback(tick) : requestAnimationFrame(tick); };
-    tick(); });
-  video.pause(); rec.stop(); await stopped; vs.getTracks().forEach(t=>t.stop());
-  monitor.gain.value = 1; video.controls = true; busy(null); S.rendering=false;
-  c.blob = new Blob(chunks, {type:MIME.split(';')[0]}); c.ext = MIME.includes('mp4') ? 'mp4' : 'webm';
-  if (c.blobUrl) URL.revokeObjectURL(c.blobUrl); c.blobUrl = URL.createObjectURL(c.blob); c.fmt = S.set.fmt;
-  c.state='ready'; renderCards();
+  let rec = null, vs = null, iv = null;
+  try {
+    await seek(c.start); drawFrame(g,w,h); drawText(g,w,h,c,0);
+    vs = cv.captureStream(30);
+    const ms = new MediaStream([...vs.getVideoTracks(), ...recDest.stream.getAudioTracks()]);
+    rec = new MediaRecorder(ms, { mimeType:MIME, videoBitsPerSecond: MOBILE ? 5e6 : 8e6 }); const chunks=[];
+    rec.ondataavailable = e => e.data.size && chunks.push(e.data); const stopped = new Promise(r=>rec.onstop=r);
+    monitor.gain.value = 0;
+    try { await video.play(); }
+    catch(e){ throw new Error(e.name==='NotAllowedError' ? 'Der Browser hat das Abspielen blockiert. Tippe noch einmal auf „Rendern“.' : (e.message||e)); }
+    rec.start(500);
+    await new Promise((res, rej) => {
+      let lastPct = -1, lastT = video.currentTime, still = 0, finished = false;
+      const end = () => { if (finished) return; finished = true; clearInterval(iv); res(); };
+      const tick = () => { if (finished) return; drawFrame(g,w,h); drawText(g,w,h,c,video.currentTime-c.start);
+        if (video.currentTime >= c.end || video.ended) return end();
+        video.requestVideoFrameCallback ? video.requestVideoFrameCallback(tick) : requestAnimationFrame(tick); };
+      tick();
+      /* Wächter: Fortschritt, Ende erkennen, hängendes Video abfangen */
+      iv = setInterval(() => {
+        const p = (video.currentTime-c.start)/(c.end-c.start);
+        if (Math.round(p*20)!==lastPct){ lastPct=Math.round(p*20); c.pct=Math.max(0,Math.min(1,p)); renderCards(); }
+        if (video.currentTime >= c.end || video.ended) return end();
+        if (video.paused && !document.hidden) { video.play().catch(()=>{}); }
+        if (Math.abs(video.currentTime-lastT) < 0.01) { if (++still > 40) { finished=true; clearInterval(iv); rej(new Error('Das Video hängt. Lass die Seite beim Rendern geöffnet und im Vordergrund.')); } }
+        else { still = 0; lastT = video.currentTime; }
+      }, 250);
+    });
+    video.pause(); rec.stop(); await stopped;
+    if (!chunks.length) throw new Error('Die Aufnahme ist leer.');
+    c.blob = new Blob(chunks, {type:MIME.split(';')[0]}); c.ext = MIME.includes('mp4') ? 'mp4' : 'webm';
+    if (c.blobUrl) URL.revokeObjectURL(c.blobUrl); c.blobUrl = URL.createObjectURL(c.blob); c.fmt = S.set.fmt;
+    c.state='ready';
+  } finally {
+    clearInterval(iv); video.pause();
+    if (rec && rec.state !== 'inactive') try { rec.stop(); } catch(e){}
+    if (vs) vs.getTracks().forEach(t=>t.stop());
+    monitor.gain.value = 1; video.controls = true; busy(null); S.rendering=false; keepAwake(false);
+    renderCards();
+  }
 }
 let queue = Promise.resolve();
-const fail = (c,e) => { S.rendering=false; video.controls=true; if (monitor) monitor.gain.value=1; busy(null); toast('Fehlgeschlagen: '+(e.message||e)); renderCards(true); };
-const enqueue = c => { c.state='queued'; renderCards(); queue = queue.then(()=>renderClip(c)).catch(e=>{ c.state='idle'; fail(c,e); }); };
-const enqueueSub = c => { c.sub='queued'; c.subMsg='Wartet…'; renderCards(true); queue = queue.then(()=>transcribe(c)).catch(e=>{ c.sub='none'; fail(c,e); }); };
+const fail = (c,e) => { S.rendering=false; video.controls=true; if (monitor) monitor.gain.value=1; busy(null); keepAwake(false); toast(e.message||String(e), 6000); renderCards(true); };
+const enqueue = c => { c.gen = GEN; c.state='queued'; renderCards(); queue = queue.then(()=>renderClip(c)).catch(e=>{ c.state='idle'; fail(c,e); }); };
+const enqueueSub = c => { c.gen = GEN; c.sub='queued'; c.subMsg='Wartet…'; renderCards(true); queue = queue.then(()=> c.gen===GEN ? transcribe(c) : null).catch(e=>{ c.sub='none'; fail(c,e); }); };
 async function saveClip(c){
   if (!downloads) { toast('Speichern ist in dieser Ansicht nicht verfügbar.'); return; }
   const name = `${S.fileName||'clip'}_highlight-${c.rank}_${{'916':'9x16','11':'1x1','orig':'16x9'}[c.fmt]}.${c.ext}`.replace(/[^\w.\-äöüÄÖÜß]+/g,'_');
@@ -621,9 +666,9 @@ grid.addEventListener('click', e => {
   if (a==='play'){ if (S.rendering) return toast('Warte, bis die laufende Aufgabe fertig ist.');
     if (c.state==='ready'){ b.closest('.card').querySelector('video').play(); return; }
     if (actx) actx.resume(); video.currentTime=c.start; previewEnd=c.end; video.play(); stage.scrollIntoView({behavior:'smooth',block:'center'}); }
-  if (a==='render') enqueue(c);
+  if (a==='render'){ unlock(); enqueue(c); }
   if (a==='save') saveClip(c);
-  if (a==='sub') enqueueSub(c);
+  if (a==='sub'){ unlock(); enqueueSub(c); }
   if (a==='del'){ S.clips = S.clips.filter(x=>x!==c); drawTimeline(); renderCards(); }
   if (a[0]==='s'&&a.length===2||a[0]==='e'){ const d = a[1]==='+'?2:-2; const len0 = c.end-c.start;
     if (a[0]==='s') c.start = Math.max(0, Math.min(c.end-3, c.start+d)); else c.end = Math.min(S.duration, Math.max(c.start+3, c.end+d));
@@ -642,8 +687,8 @@ grid.addEventListener('input', e => {
   sum.innerHTML = 'Titel &amp; Untertitel ' + (has?`<b>· ${has}</b>`:'');
 });
 grid.addEventListener('toggle', e => { const d = e.target; if (d.tagName!=='DETAILS') return; const c = S.clips.find(x=>x.id===d.closest('.card').dataset.id); if (c) c.open = d.open; }, true);
-$('renderAll').onclick = () => S.clips.filter(c=>c.state==='idle').forEach(enqueue);
-$('subAll').onclick = () => S.clips.filter(c=>c.sub==='none' && c.state==='idle').forEach(enqueueSub);
+$('renderAll').onclick = () => { unlock(); S.clips.filter(c=>c.state==='idle').forEach(enqueue); };
+$('subAll').onclick = () => { unlock(); S.clips.filter(c=>c.sub==='none' && c.state==='idle').forEach(enqueueSub); };
 
 /* ---------- settings ---------- */
 function syncSettings(){
@@ -668,8 +713,8 @@ $('sens').oninput = e => { S.set.sens=+e.target.value; changed(1); };
 $('pos').oninput = e => { S.set.pos=+e.target.value; changed(0); };
 
 /* ---------- file input & drag/drop ---------- */
-$('file').onchange = e => loadFile(e.target.files[0]);
-$('analyze').onclick = analyze;
+$('file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; loadFile(f); };
+$('analyze').onclick = () => { if (S.method==='scan') unlock(); analyze(); };
 addEventListener('dragover', e => { e.preventDefault(); stage.classList.add('drag'); });
 addEventListener('dragleave', e => { if (!e.relatedTarget) stage.classList.remove('drag'); });
 addEventListener('drop', e => { e.preventDefault(); stage.classList.remove('drag'); const f=e.dataTransfer.files[0]; if (f) loadFile(f); });
