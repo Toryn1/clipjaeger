@@ -110,6 +110,23 @@ details.text summary b{color:var(--accent);font-weight:600}
 .empty{grid-column:1/-1;padding:28px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:600;font-size:14px;max-width:calc(100% - 32px);z-index:20}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+/* Login */
+.auth{position:fixed;inset:0;z-index:30;background:var(--bg);overflow:auto;display:flex;align-items:center;justify-content:center;
+  padding:calc(24px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.authbox{width:100%;max-width:380px;display:flex;flex-direction:column;gap:16px}
+.authbox .brand h1{font-size:42px}
+.authbox p.lead{margin:0;color:var(--muted);font-size:14px}
+.authcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.authcard input{width:100%;font:16px var(--body);color:var(--fg);background:var(--raised);border:1px solid var(--line);border-radius:8px;padding:11px 12px}
+.authcard button{justify-content:center;min-height:44px}
+.authcard .seg button[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.or{display:flex;align-items:center;gap:10px;color:var(--muted);font:12px var(--mono);text-transform:uppercase;letter-spacing:.08em}
+.or::before,.or::after{content:"";flex:1;height:1px;background:var(--line)}
+.autherr{margin:0;color:var(--tally);font-size:13px;min-height:1em}
+.linkbtn{background:none;border:none;color:var(--muted);text-decoration:underline;padding:0;min-height:0;font-weight:500;font-size:13px;align-self:center}
+.who{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);min-width:0}
+.who span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40vw}
+.who button{min-height:32px;padding:5px 10px;font-size:13px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -120,6 +137,7 @@ details.text summary b{color:var(--accent);font-weight:600}
   <header>
     <div class="brand"><span class="dot" aria-hidden="true"></span><h1>Clipjäger</h1></div>
     <span class="tag">Highlights finden · untertiteln · exportieren — alles lokal im Browser</span>
+    <div class="who" id="who" hidden><span id="whoName"></span><button id="logout">Abmelden</button></div>
   </header>
 
   <section class="top">
@@ -213,6 +231,22 @@ details.text summary b{color:var(--accent);font-weight:600}
     <p class="hint">Unter „Titel &amp; Untertitel“ in jeder Karte legst du den Text fest, der ins Video geschrieben wird. Rendern läuft in Echtzeit: ein 30-Sekunden-Clip braucht etwa 30 Sekunden. Lass den Tab dabei geöffnet.</p>
     <div class="grid" id="grid"></div>
   </section>
+</div>
+<div class="auth" id="auth" hidden>
+  <div class="authbox">
+    <div class="brand"><span class="dot" aria-hidden="true"></span><h1>Clipjäger</h1></div>
+    <p class="lead">Melde dich an, um Highlights aus deinen Streams zu schneiden.</p>
+    <form class="authcard" id="authForm" novalidate>
+      <div class="seg" id="authMode"><button type="button" data-v="in" aria-pressed="true">Anmelden</button><button type="button" data-v="up" aria-pressed="false">Konto erstellen</button></div>
+      <div class="field"><label for="authEmail">E-Mail</label><input id="authEmail" type="email" autocomplete="email" required></div>
+      <div class="field"><label for="authPass">Passwort</label><input id="authPass" type="password" autocomplete="current-password" minlength="6" required></div>
+      <p class="autherr" id="authErr" role="alert"></p>
+      <button class="primary" type="submit" id="authSubmit">Anmelden</button>
+      <div class="or">oder</div>
+      <button type="button" id="authGoogle">Mit Google anmelden</button>
+      <button type="button" class="linkbtn" id="authReset">Passwort vergessen?</button>
+    </form>
+  </div>
 </div>
 <div class="toast" id="toast" hidden></div>
 
@@ -725,6 +759,57 @@ makeSample(); detect(); sampleText(); syncSettings(); renderCards();
 requestAnimationFrame(drawTimeline);
 if (document.fonts) document.fonts.ready.then(drawTimeline);
 })();
+</script>
+
+<script type="module">
+/* Login mit Firebase. Läuft nur auf der eigenen Website, nicht in der Claude-Ansicht. */
+const FIREBASE_CONFIG = null; /* wird mit den Werten aus der Firebase-Konsole gefüllt */
+const inClaude = !!(window.claude && window.claude.use);
+if (FIREBASE_CONFIG && !inClaude) {
+  const $ = id => document.getElementById(id);
+  const app = document.querySelector('.wrap'), gate = $('auth');
+  app.hidden = true; gate.hidden = false;
+  const V = '10.12.2';
+  let A, auth;
+  try {
+    const { initializeApp } = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-app.js`);
+    A = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-auth.js`);
+    auth = A.getAuth(initializeApp(FIREBASE_CONFIG)); auth.languageCode = 'de';
+  } catch(e) {
+    $('authErr').textContent = 'Der Login konnte nicht geladen werden. Prüfe deine Internetverbindung und lade die Seite neu.';
+    document.querySelectorAll('#authForm button, #authForm input').forEach(x => x.disabled = true);
+    throw e;
+  }
+  const MSG = {
+    'auth/invalid-credential':'E-Mail oder Passwort ist falsch.', 'auth/wrong-password':'E-Mail oder Passwort ist falsch.', 'auth/user-not-found':'Zu dieser E-Mail gibt es kein Konto.',
+    'auth/email-already-in-use':'Mit dieser E-Mail gibt es schon ein Konto. Melde dich an.', 'auth/weak-password':'Das Passwort braucht mindestens 6 Zeichen.',
+    'auth/invalid-email':'Bitte eine gültige E-Mail-Adresse eingeben.', 'auth/missing-password':'Bitte ein Passwort eingeben.',
+    'auth/too-many-requests':'Zu viele Versuche. Warte kurz und versuch es nochmal.', 'auth/network-request-failed':'Keine Verbindung. Prüfe dein Internet.',
+    'auth/operation-not-allowed':'Diese Anmeldeart ist in Firebase noch nicht aktiviert.', 'auth/unauthorized-domain':'Diese Website ist in Firebase nicht freigegeben (Autorisierte Domains).',
+    'auth/popup-blocked':'Das Anmeldefenster wurde blockiert. Erlaube Pop-ups und versuch es nochmal.' };
+  const err = e => { $('authErr').textContent = e ? (MSG[e.code] || 'Anmeldung fehlgeschlagen: '+(e.code||e.message)) : ''; };
+  let mode = 'in';
+  $('authMode').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; mode = b.dataset.v;
+    $('authMode').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x===b)));
+    $('authSubmit').textContent = mode==='in' ? 'Anmelden' : 'Konto erstellen';
+    $('authPass').autocomplete = mode==='in' ? 'current-password' : 'new-password'; err(null); });
+  $('authForm').addEventListener('submit', async e => { e.preventDefault(); err(null); const em = $('authEmail').value.trim(), pw = $('authPass').value;
+    $('authSubmit').disabled = true;
+    try { mode==='in' ? await A.signInWithEmailAndPassword(auth, em, pw) : await A.createUserWithEmailAndPassword(auth, em, pw); }
+    catch(x){ err(x); } $('authSubmit').disabled = false; });
+  $('authGoogle').addEventListener('click', async () => { err(null);
+    try { await A.signInWithPopup(auth, new A.GoogleAuthProvider()); }
+    catch(x){ if (x.code !== 'auth/popup-closed-by-user' && x.code !== 'auth/cancelled-popup-request') err(x); } });
+  $('authReset').addEventListener('click', async () => { const em = $('authEmail').value.trim();
+    if (!em) { $('authErr').textContent = 'Gib oben deine E-Mail ein, dann tippe nochmal auf „Passwort vergessen?“.'; return; }
+    try { await A.sendPasswordResetEmail(auth, em); $('authErr').textContent = 'Wir haben dir einen Link zum Zurücksetzen geschickt. Schau auch im Spam-Ordner.'; }
+    catch(x){ err(x); } });
+  $('logout').addEventListener('click', () => A.signOut(auth));
+  A.onAuthStateChanged(auth, user => {
+    gate.hidden = !!user; app.hidden = !user; $('who').hidden = !user;
+    if (user) { $('whoName').textContent = user.displayName || user.email || 'Angemeldet'; $('authPass').value = ''; window.dispatchEvent(new Event('resize')); }
+  });
+}
 </script>
 
 </body>
