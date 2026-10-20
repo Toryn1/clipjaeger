@@ -110,6 +110,31 @@ details.text summary b{color:var(--accent);font-weight:600}
 .empty{grid-column:1/-1;padding:28px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:8px;font-weight:600;font-size:14px;max-width:calc(100% - 32px);z-index:20}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+/* Menüband & Assets */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs button{background:none;border:none;border-bottom:3px solid transparent;border-radius:0;padding:10px 14px 9px;min-height:44px;color:var(--muted);font:800 18px/1 var(--display);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+.tabs button:hover:not(:disabled){color:var(--fg)}
+.tabs button[aria-current="page"]{color:var(--fg);border-bottom-color:var(--accent)}
+.count{font:600 11px var(--mono);background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:1px 7px;margin-left:4px;vertical-align:2px;letter-spacing:0}
+.count:empty{display:none}
+.view{display:flex;flex-direction:column;gap:20px}
+.view.off{position:fixed;left:-300vw;top:0;width:100vw;pointer-events:none}
+.assethead{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.crumbs{display:flex;align-items:center;gap:8px;min-width:0;font:800 28px/1.1 var(--display);text-transform:uppercase;letter-spacing:.04em}
+.crumbs span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.crumbs span::before{content:"/";color:var(--muted);margin-right:8px}
+.crumb{background:none;border:none;padding:0;min-height:0;font:inherit;text-transform:inherit;letter-spacing:inherit;color:var(--fg)}
+.crumb.link{color:var(--muted)}
+.folder{cursor:pointer;text-align:left;padding:0;display:flex;flex-direction:column;align-items:stretch;gap:0;font:inherit;min-height:0;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;color:var(--fg)}
+.folder .thumb{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px}
+.folder .thumb img,.folder .thumb .ph{width:100%;height:100%;object-fit:cover;background:var(--raised)}
+.folder .thumb.n1 img,.folder .thumb.n1 .ph{grid-column:1/-1;grid-row:1/-1}
+.folder .thumb.n2{grid-template-rows:1fr}
+.folder .thumb.n3 img:first-child{grid-row:1/-1}
+.folder .tab{position:absolute;left:10px;top:10px;font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;background:var(--accent);color:var(--on-accent);padding:3px 8px;border-radius:5px}
+.folder .body strong{font-size:15px;word-break:break-word}
+.meta{font:12px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.danger{color:var(--tally)}
 /* Login */
 .auth{position:fixed;inset:0;z-index:30;background:var(--bg);overflow:auto;display:flex;align-items:center;justify-content:center;
   padding:calc(24px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
@@ -140,6 +165,11 @@ details.text summary b{color:var(--accent);font-weight:600}
     <div class="who" id="who" hidden><span id="whoName"></span><button id="logout">Abmelden</button></div>
   </header>
 
+  <nav class="tabs" aria-label="Bereiche">
+    <button data-view="studio" aria-current="page">Clips erstellen</button>
+    <button data-view="assets">Assets <span class="count" id="assetCount"></span></button>
+  </nav>
+  <div class="view" id="viewStudio">
   <section class="top">
     <div>
       <div class="stage" id="stage">
@@ -231,6 +261,15 @@ details.text summary b{color:var(--accent);font-weight:600}
     <p class="hint">Unter „Titel &amp; Untertitel“ in jeder Karte legst du den Text fest, der ins Video geschrieben wird. Rendern läuft in Echtzeit: ein 30-Sekunden-Clip braucht etwa 30 Sekunden. Lass den Tab dabei geöffnet.</p>
     <div class="grid" id="grid"></div>
   </section>
+  </div>
+  <div class="view" id="viewAssets" hidden>
+    <div class="assethead">
+      <div class="crumbs"><button class="crumb" id="crumbRoot">Assets</button><span id="crumbFolder" hidden></span></div>
+      <span class="hint" id="assetUsage"></span>
+    </div>
+    <div class="grid" id="assetGrid"></div>
+    <p class="hint">Fertig gerenderte Clips werden automatisch hier gespeichert, sortiert nach Video. Sie liegen im Speicher dieses Browsers auf diesem Gerät.</p>
+  </div>
 </div>
 <div class="auth" id="auth" hidden>
   <div class="authbox">
@@ -598,7 +637,7 @@ async function renderClip(c){
       const end = () => { if (finished) return; finished = true; clearInterval(iv); res(); };
       const tick = () => { if (finished) return; drawFrame(g,w,h); drawText(g,w,h,c,video.currentTime-c.start);
         if (video.currentTime >= c.end || video.ended) return end();
-        video.requestVideoFrameCallback ? video.requestVideoFrameCallback(tick) : requestAnimationFrame(tick); };
+        requestAnimationFrame(tick); };
       tick();
       /* Wächter: Fortschritt, Ende erkennen, hängendes Video abfangen */
       iv = setInterval(() => {
@@ -615,6 +654,7 @@ async function renderClip(c){
     c.blob = new Blob(chunks, {type:MIME.split(';')[0]}); c.ext = MIME.includes('mp4') ? 'mp4' : 'webm';
     if (c.blobUrl) URL.revokeObjectURL(c.blobUrl); c.blobUrl = URL.createObjectURL(c.blob); c.fmt = S.set.fmt;
     c.state='ready';
+    libSave(c);
   } finally {
     clearInterval(iv); video.pause();
     if (rec && rec.state !== 'inactive') try { rec.stop(); } catch(e){}
@@ -754,6 +794,108 @@ addEventListener('dragleave', e => { if (!e.relatedTarget) stage.classList.remov
 addEventListener('drop', e => { e.preventDefault(); stage.classList.remove('drag'); const f=e.dataTransfer.files[0]; if (f) loadFile(f); });
 video.addEventListener('loadedmetadata', updateCrop);
 
+/* ---------- Assets: gerenderte Clips im Browser-Speicher (IndexedDB), Ordner = Videoname ---------- */
+const LIB = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('clipjaeger', 1);
+    r.onupgradeneeded = () => { const st = r.result.createObjectStore('clips', {keyPath:'id'}); st.createIndex('owner','owner'); };
+    r.onsuccess = () => res(r.result); r.onerror = () => { dbp = null; rej(r.error); };
+  }));
+  const run = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => {
+    const t = db.transaction('clips', mode), q = fn(t.objectStore('clips'));
+    t.oncomplete = () => res(q && q.result); t.onerror = t.onabort = () => rej(t.error); }); };
+  const owner = () => window.CJ_USER || 'local';
+  return {
+    put: rec => run('readwrite', st => st.put({...rec, owner: owner()})),
+    all: async () => (await run('readonly', st => st.index('owner').getAll(owner()))) || [],
+    del: ids => run('readwrite', st => { ids.forEach(id => st.delete(id)); }),
+  };
+})();
+let libOk = !!window.indexedDB, persisted = false;
+async function libSave(c){
+  if (!libOk || !c.blob) return;
+  try {
+    if (!persisted && navigator.storage && navigator.storage.persist) { persisted = true; navigator.storage.persist().catch(()=>{}); }
+    await LIB.put({ id: c.id, folder: S.fileName || 'Ohne Namen', title: c.title || '', kind: c.kind, rank: c.rank,
+      start: c.start, end: c.end, fmt: c.fmt, ext: c.ext, created: Date.now(), size: c.blob.size, blob: c.blob, thumb: c.thumb || null });
+    toast(`In Assets gespeichert: ${S.fileName || 'Ohne Namen'}`); refreshCount();
+  } catch(e){
+    toast(e && e.name==='QuotaExceededError' ? 'Speicher voll. Lösche alte Clips unter Assets.' : 'Clip konnte nicht in Assets gespeichert werden.', 6000);
+  }
+}
+const FMT_LABEL = {'916':'9:16','11':'1:1','orig':'16:9'};
+const fmtDate = t => new Date(t).toLocaleDateString('de-CH', {day:'2-digit', month:'2-digit', year:'numeric'});
+const fmtMB = b => b >= 1e9 ? (b/1e9).toFixed(1)+' GB' : Math.max(0.1, b/1e6).toFixed(1)+' MB';
+const AS = { folder: null, urls: [] };
+async function refreshCount(){
+  if (!libOk) return; try { const n = (await LIB.all()).length; $('assetCount').textContent = n || ''; } catch(e){}
+}
+function clipName(r){ return `${r.folder}_highlight-${r.rank}_${{'916':'9x16','11':'1x1','orig':'16x9'}[r.fmt]||'clip'}.${r.ext}`.replace(/[^\w.\-äöüÄÖÜß]+/g,'_'); }
+async function renderAssets(){
+  const ag = $('assetGrid');
+  AS.urls.forEach(u => URL.revokeObjectURL(u)); AS.urls = [];
+  $('crumbFolder').hidden = !AS.folder; $('crumbFolder').textContent = AS.folder || '';
+  $('crumbRoot').classList.toggle('link', !!AS.folder);
+  if (!libOk){ ag.innerHTML = '<div class="empty">Dieser Browser erlaubt keinen Speicher für Clips (z. B. im privaten Modus).</div>'; return; }
+  let recs; try { recs = await LIB.all(); } catch(e){ libOk = false; return renderAssets(); }
+  const total = recs.reduce((a,r)=>a+(r.size||0),0);
+  $('assetUsage').textContent = recs.length ? `${recs.length} Clips · ${fmtMB(total)} auf diesem Gerät` : '';
+  $('assetCount').textContent = recs.length || '';
+  if (!AS.folder){
+    const folders = new Map();
+    for (const r of recs){ const f = folders.get(r.folder) || {name:r.folder, items:[], last:0, size:0}; f.items.push(r); f.last=Math.max(f.last,r.created); f.size+=r.size||0; folders.set(r.folder,f); }
+    const list = [...folders.values()].sort((a,b)=>b.last-a.last);
+    if (!list.length){ ag.innerHTML = '<div class="empty">Noch keine Clips. Sobald du unter „Clips erstellen“ einen Clip renderst, landet er hier in einem Ordner mit dem Namen des Videos.</div>'; return; }
+    ag.innerHTML = list.map(f => {
+      const pics = f.items.sort((a,b)=>a.rank-b.rank).filter(r=>r.thumb).slice(0,4);
+      const th = pics.map(r=>`<img src="${r.thumb}" alt="">`).join('') || '<div class="ph"></div>';
+      return `<article class="folder" role="button" tabindex="0" data-folder="${esc(f.name)}">
+        <div class="thumb n${Math.max(1,pics.length)}">${th}<span class="tab">Ordner</span></div>
+        <div class="body"><strong>${esc(f.name)}</strong>
+          <span class="meta">${f.items.length} ${f.items.length===1?'Clip':'Clips'} · ${fmtMB(f.size)} · zuletzt ${fmtDate(f.last)}</span></div>
+      </article>`; }).join('');
+    return;
+  }
+  const items = recs.filter(r=>r.folder===AS.folder).sort((a,b)=>a.rank-b.rank || b.created-a.created);
+  if (!items.length){ AS.folder = null; return renderAssets(); }
+  ag.innerHTML = items.map(r => { const u = URL.createObjectURL(r.blob); AS.urls.push(u);
+    return `<article class="card" data-rid="${r.id}">
+      <div class="thumb"><video src="${u}" ${r.thumb?`poster="${r.thumb}"`:''} controls playsinline preload="metadata"></video></div>
+      <div class="body">
+        <div class="row"><span class="kind">#${r.rank} ${esc(r.title || r.kind)}</span><span class="tc">${fmtT(r.start)}–${fmtT(r.end)}</span></div>
+        <span class="meta">${Math.round(r.end-r.start)} s · ${FMT_LABEL[r.fmt]||''} · .${r.ext} · ${fmtMB(r.size||0)} · ${fmtDate(r.created)}</span>
+        <div class="actions"><button class="primary" data-a="dl" ${downloads?'':'disabled'}>Speichern</button><button class="x" data-a="rm">Löschen</button></div>
+      </div></article>`; }).join('') +
+    `<div class="empty" style="grid-column:1/-1;border-style:solid"><button data-a="rmfolder">Ganzen Ordner löschen</button></div>`;
+}
+/* Zweimal tippen zum Löschen, statt eines Dialogs */
+function armed(b, label){ if (b.dataset.armed) return true; const old = b.textContent; b.dataset.armed='1'; b.textContent = label; b.classList.add('danger');
+  setTimeout(()=>{ delete b.dataset.armed; b.textContent = old; b.classList.remove('danger'); }, 3000); return false; }
+$('assetGrid').addEventListener('click', async e => {
+  const f = e.target.closest('.folder'); if (f){ AS.folder = f.dataset.folder; renderAssets(); scrollTo({top:0}); return; }
+  const b = e.target.closest('button[data-a]'); if (!b) return;
+  const all = await LIB.all();
+  if (b.dataset.a==='rmfolder'){ if (!armed(b,'Wirklich alle löschen?')) return; await LIB.del(all.filter(r=>r.folder===AS.folder).map(r=>r.id)); AS.folder=null; renderAssets(); return; }
+  const r = all.find(x=>x.id===b.closest('.card').dataset.rid); if (!r) return;
+  if (b.dataset.a==='rm'){ if (!armed(b,'Sicher?')) return; await LIB.del([r.id]); renderAssets(); }
+  if (b.dataset.a==='dl'){ try { await downloads.save({filename: clipName(r), data: r.blob}); toast('Gespeichert: '+clipName(r)); }
+    catch(x){ if (x.code!=='declined') toast('Speichern nicht möglich: '+(x.message||x.code)); } }
+});
+$('assetGrid').addEventListener('keydown', e => { if ((e.key==='Enter'||e.key===' ') && e.target.classList.contains('folder')){ e.preventDefault(); e.target.click(); } });
+$('crumbRoot').onclick = () => { AS.folder = null; renderAssets(); };
+function showView(v){
+  document.querySelectorAll('.tabs button').forEach(b => b.dataset.view===v ? b.setAttribute('aria-current','page') : b.removeAttribute('aria-current'));
+  /* Studio wird nur aus dem Bild geschoben, damit laufendes Rendern weiterläuft */
+  $('viewStudio').classList.toggle('off', v!=='studio'); $('viewStudio').inert = v!=='studio';
+  $('viewAssets').hidden = v!=='assets';
+  if (v==='assets') renderAssets(); else { AS.urls.forEach(u=>URL.revokeObjectURL(u)); AS.urls=[]; $('assetGrid').innerHTML=''; requestAnimationFrame(()=>{ drawTimeline(); updateCrop(); }); }
+  scrollTo({top:0});
+}
+document.querySelector('.tabs').addEventListener('click', e => { const b = e.target.closest('button[data-view]'); if (b) showView(b.dataset.view); });
+window.addEventListener('cj-user', () => { AS.folder = null; refreshCount(); if (!$('viewAssets').hidden) renderAssets(); });
+refreshCount();
+
 /* ---------- start with sample ---------- */
 makeSample(); detect(); sampleText(); syncSettings(); renderCards();
 requestAnimationFrame(drawTimeline);
@@ -814,6 +956,7 @@ if (FIREBASE_CONFIG && !inClaude) {
   $('logout').addEventListener('click', () => A.signOut(auth));
   A.onAuthStateChanged(auth, user => {
     gate.hidden = !!user; app.hidden = !user; $('who').hidden = !user;
+    window.CJ_USER = user ? user.uid : null; window.dispatchEvent(new Event('cj-user'));
     if (user) { $('whoName').textContent = user.displayName || user.email || 'Angemeldet'; $('authPass').value = ''; window.dispatchEvent(new Event('resize')); }
   });
 }
