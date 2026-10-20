@@ -763,7 +763,14 @@ if (document.fonts) document.fonts.ready.then(drawTimeline);
 
 <script type="module">
 /* Login mit Firebase. Läuft nur auf der eigenen Website, nicht in der Claude-Ansicht. */
-const FIREBASE_CONFIG = null; /* wird mit den Werten aus der Firebase-Konsole gefüllt */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD5xeLjBt5npCYSJNOT6hWTdNLyMyeU0R4",
+  authDomain: "clipjaeger-be306.firebaseapp.com",
+  projectId: "clipjaeger-be306",
+  storageBucket: "clipjaeger-be306.firebasestorage.app",
+  messagingSenderId: "337111813730",
+  appId: "1:337111813730:web:87e24fc3bb9350d3d8cb3b"
+};
 const inClaude = !!(window.claude && window.claude.use);
 if (FIREBASE_CONFIG && !inClaude) {
   const $ = id => document.getElementById(id);
